@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find E:/pipeline -type f -not -path \"*/\\\\.venv/*\" -not -path \"*/.idea/*\" | sort)",
+      "Bash(pdftotext \"C:\\\\Users\\\\Sabkat_Desh\\\\Downloads\\\\pipeline\\\\BE-Assessment-Sept2026.pdf\" -)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('app/schemas/stats.py'\\).read\\(\\)\\); print\\('schemas/stats.py OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('app/api/v1/stats.py'\\).read\\(\\)\\); print\\('api/v1/stats.py OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -m pip show pydantic)",
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(.venv/Scripts/python.exe -c \"import pydantic; print\\('pydantic', pydantic.__version__\\)\")",
+      "Bash(DATABASE_URL=postgresql+asyncpg://test:test@localhost/test OPENAI_API_KEY=sk-test .venv/Scripts/python.exe -c ' *)"
+    ]
+  }
+}
