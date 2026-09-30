@@ -20,6 +20,7 @@ error_message on a run that still finishes as "completed".
 """
 
 import asyncio
+import math
 from datetime import date, timedelta
 
 from sqlalchemy import func, select, text, update
@@ -68,14 +69,19 @@ class IngestionPipeline:
 
         try:
             async with ArxivClient() as client:
-                for category in categories:
-                    for win_start, win_end in _weekly_windows(date_from, date_to):
-                        if self._total_fetched >= self._cfg.arxiv_max_papers:
-                            logger.info("max_papers_cap_reached", cap=self._cfg.arxiv_max_papers)
-                            break
-                        await self._process_window(client, category, win_start, win_end)
+                # Windows outer, categories inner: if ARXIV_MAX_PAPERS cuts the run short,
+                # every category is sampled across the whole date range.
+                windows = _weekly_windows(date_from, date_to)
+                # Per category-week quota so the paper cap yields an even sample of the range.
+                quota = max(1, math.ceil(self._cfg.arxiv_max_papers / max(1, len(windows) * len(categories))))
+                for win_start, win_end in windows:
                     if self._total_fetched >= self._cfg.arxiv_max_papers:
+                        logger.info("max_papers_cap_reached", cap=self._cfg.arxiv_max_papers)
                         break
+                    for category in categories:
+                        if self._total_fetched >= self._cfg.arxiv_max_papers:
+                            break
+                        await self._process_window(client, category, win_start, win_end, quota)
 
             warnings = await self._run_post_ingest()
             await self._update_run(
@@ -145,6 +151,7 @@ class IngestionPipeline:
         category: str,
         win_start: date,
         win_end: date,
+        quota: int,
     ) -> None:
         window_key = str(win_start)
 
@@ -159,7 +166,7 @@ class IngestionPipeline:
         logger.info("window_start", category=category, window=window_key, resume_offset=offset)
 
         while True:
-            remaining = self._cfg.arxiv_max_papers - self._total_fetched
+            remaining = min(self._cfg.arxiv_max_papers - self._total_fetched, quota - offset)
             if remaining <= 0:
                 break
 

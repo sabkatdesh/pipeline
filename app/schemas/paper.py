@@ -1,4 +1,6 @@
-from datetime import datetime
+"""Ingestion and paper-facing request/response models."""
+
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -42,15 +44,6 @@ class ResetRequest(BaseModel):
 
 class ResetResponse(BaseModel):
     message: str
-
-
-"""Paper-facing response models."""
-
-from __future__ import annotations
-
-from datetime import date
-
-from pydantic import BaseModel, Field
 
 
 class PaperOut(BaseModel):

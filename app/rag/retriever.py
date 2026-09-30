@@ -34,8 +34,6 @@ SPARSE_TOP = 20
 GRAPH_TOP = 10
 FUSED_TOP = 20
 IVFFLAT_PROBES = 20
-HIGH_THRESHOLD = 0.80
-MEDIUM_THRESHOLD = 0.70
 _MAX_QUERY_CHARS = 2000
 
 
@@ -57,16 +55,18 @@ class RetrievedDoc:
 
 def confidence_from_score(score: float | None, threshold: float | None = None) -> ConfidenceLevel:
     """
-    >= 0.80 high, >= 0.70 medium, >= threshold (RAG_SIMILARITY_THRESHOLD, 0.65) low,
-    below that none ("no relevant papers").
+    Map the best cosine similarity to a confidence band. Cut-offs come from
+    RAG_HIGH_THRESHOLD / RAG_MEDIUM_THRESHOLD / RAG_SIMILARITY_THRESHOLD;
+    below the last one the answer is "none" (no relevant papers).
     """
+    cfg = get_settings()
     if threshold is None:
-        threshold = get_settings().rag_similarity_threshold
+        threshold = cfg.rag_similarity_threshold
     if score is None:
         return ConfidenceLevel.none
-    if score >= HIGH_THRESHOLD:
+    if score >= cfg.rag_high_threshold:
         return ConfidenceLevel.high
-    if score >= MEDIUM_THRESHOLD:
+    if score >= cfg.rag_medium_threshold:
         return ConfidenceLevel.medium
     if score >= threshold:
         return ConfidenceLevel.low

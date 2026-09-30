@@ -2,7 +2,7 @@
 CLI entry point for running ingestion outside of the HTTP API.
 
 Usage:
-    python -m scripts.ingest [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--categories cs.AI,cs.LG]
+    python -m scripts.ingest [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--categories cs.AI,cs.LG] [--reset]
 
 The script creates an ingestion_run record, runs the pipeline synchronously,
 and exits with a non-zero code on failure.
@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger, setup_logging
 from app.ingestion.pipeline import IngestionPipeline
+from app.ingestion.reset import wipe_dataset
 from app.models.ingestion_run import IngestionRun
 
 logger = get_logger(__name__)
@@ -46,6 +47,11 @@ def _parse_args() -> argparse.Namespace:
         default=cfg.arxiv_categories,
         help=f"Comma-separated arXiv categories (default: {cfg.arxiv_categories})",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Wipe all papers, authors, categories, embeddings and indexes, then exit.",
+    )
     return parser.parse_args()
 
 
@@ -53,6 +59,13 @@ async def _main() -> None:
     args = _parse_args()
     cfg = get_settings()
     setup_logging(cfg.log_level)
+
+    if args.reset:
+        async with AsyncSessionLocal() as session:
+            await wipe_dataset(session)
+            await session.commit()
+        print("Dataset wiped. Run the ingest command again for a fresh import.")
+        return
 
     date_from = date.fromisoformat(args.date_from)
     date_to = date.fromisoformat(args.date_to)
@@ -88,7 +101,7 @@ async def _main() -> None:
         finished = result.scalar_one()
 
     print(
-        f"\n✓ Ingestion complete\n"
+        f"\nIngestion complete\n"
         f"  Run ID  : {finished.id}\n"
         f"  Status  : {finished.status}\n"
         f"  Fetched : {finished.papers_fetched}\n"
@@ -104,7 +117,7 @@ def main() -> None:
         print("\nIngestion cancelled by user.", file=sys.stderr)
         sys.exit(1)
     except Exception as exc:
-        print(f"\n✗ Ingestion failed: {exc}", file=sys.stderr)
+        print(f"\nIngestion failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
 

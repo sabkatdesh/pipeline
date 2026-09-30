@@ -116,8 +116,8 @@ async def get_top_categories(
                 FROM categories c
                 JOIN paper_categories pc ON c.code = pc.category_code
                 JOIN papers p ON pc.paper_id = p.arxiv_id
-                WHERE (:from_date IS NULL OR p.published_date >= :from_date)
-                  AND (:to_date   IS NULL OR p.published_date <= :to_date)
+                WHERE (CAST(:from_date AS date) IS NULL OR p.published_date >= CAST(:from_date AS date))
+                  AND (CAST(:to_date AS date) IS NULL OR p.published_date < CAST(:to_date AS date) + INTERVAL '1 day')
                 GROUP BY c.code, c.display_name
                 ORDER BY cnt DESC
                 LIMIT :limit
@@ -133,8 +133,8 @@ async def get_top_categories(
                 FROM categories c
                 JOIN paper_categories pc ON c.code = pc.category_code
                 JOIN papers p ON pc.paper_id = p.arxiv_id
-                WHERE (:from_date IS NULL OR p.published_date >= :from_date)
-                  AND (:to_date   IS NULL OR p.published_date <= :to_date)
+                WHERE (CAST(:from_date AS date) IS NULL OR p.published_date >= CAST(:from_date AS date))
+                  AND (CAST(:to_date AS date) IS NULL OR p.published_date < CAST(:to_date AS date) + INTERVAL '1 day')
             """),
             params,
         )
@@ -176,15 +176,15 @@ async def get_papers_by_category_over_time(
     rows = (
         await db.execute(
             text("""
-                SELECT TO_CHAR(p.published_date, :fmt) AS period,
+                SELECT TO_CHAR(p.published_date, CAST(:fmt AS text)) AS period,
                        pc.category_code                AS category,
                        COUNT(*)                        AS cnt
                 FROM papers p
                 JOIN paper_categories pc ON p.arxiv_id = pc.paper_id
-                WHERE (:from_date IS NULL OR p.published_date >= :from_date)
-                  AND (:to_date   IS NULL OR p.published_date <= :to_date)
-                  AND (:category  IS NULL OR pc.category_code = :category)
-                GROUP BY TO_CHAR(p.published_date, :fmt), pc.category_code
+                WHERE (CAST(:from_date AS date) IS NULL OR p.published_date >= CAST(:from_date AS date))
+                  AND (CAST(:to_date AS date) IS NULL OR p.published_date < CAST(:to_date AS date) + INTERVAL '1 day')
+                  AND (CAST(:category AS text) IS NULL OR pc.category_code = CAST(:category AS text))
+                GROUP BY TO_CHAR(p.published_date, CAST(:fmt AS text)), pc.category_code
                 ORDER BY period, category
             """),
             params,
@@ -220,8 +220,8 @@ async def get_top_authors(
                 FROM authors a
                 JOIN paper_authors pa ON a.id = pa.author_id
                 JOIN papers p         ON pa.paper_id = p.arxiv_id
-                WHERE (:from_date IS NULL OR p.published_date >= :from_date)
-                  AND (:to_date   IS NULL OR p.published_date <= :to_date)
+                WHERE (CAST(:from_date AS date) IS NULL OR p.published_date >= CAST(:from_date AS date))
+                  AND (CAST(:to_date AS date) IS NULL OR p.published_date < CAST(:to_date AS date) + INTERVAL '1 day')
                 GROUP BY a.id, a.name
                 ORDER BY paper_count DESC
                 LIMIT :limit
@@ -252,12 +252,12 @@ async def get_publication_velocity(
     rows = (
         await db.execute(
             text("""
-                SELECT TO_CHAR(published_date, :fmt) AS period,
+                SELECT TO_CHAR(published_date, CAST(:fmt AS text)) AS period,
                        COUNT(*)                      AS cnt
                 FROM papers
-                WHERE (:from_date IS NULL OR published_date >= :from_date)
-                  AND (:to_date   IS NULL OR published_date <= :to_date)
-                GROUP BY TO_CHAR(published_date, :fmt)
+                WHERE (CAST(:from_date AS date) IS NULL OR published_date >= CAST(:from_date AS date))
+                  AND (CAST(:to_date AS date) IS NULL OR published_date < CAST(:to_date AS date) + INTERVAL '1 day')
+                GROUP BY TO_CHAR(published_date, CAST(:fmt AS text))
                 ORDER BY period
             """),
             params,

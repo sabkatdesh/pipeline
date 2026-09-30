@@ -10,13 +10,14 @@ import asyncio
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.ingestion.pipeline import IngestionPipeline
+from app.ingestion.reset import wipe_dataset
 from app.models.ingestion_run import IngestionRun
 from app.schemas.paper import IngestRequest, IngestStarted, IngestStatus, ResetRequest, ResetResponse
 
@@ -159,9 +160,7 @@ async def reset_database(
             detail="Cannot reset while ingestion is running.",
         )
 
-    # CASCADE on FK constraints handles dependent rows automatically.
-    for table in ("paper_concepts", "paper_categories", "paper_authors", "papers", "authors", "concepts", "ingestion_runs"):
-        await db.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
+    await wipe_dataset(db)
 
     logger.info("database_reset")
     return ResetResponse(message="Database wiped. Ready for fresh import.")

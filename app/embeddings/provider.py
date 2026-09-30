@@ -1,8 +1,8 @@
 """
 Embedding providers.
 
-  OpenAIProvider  - text-embedding-3-small (default), 1536-dim
-  LocalProvider   - sentence-transformers (e.g. all-MiniLM-L6-v2), 384-dim
+  LocalProvider   - fastembed/ONNX all-MiniLM-L6-v2 (default, no API key, 384-dim)
+  OpenAIProvider  - OpenAI text-embedding-3-small (1536-dim) or an Azure OpenAI deployment
 
 Both expose `async embed(texts) -> list[list[float]]` (same order as input).
 Retry policy (spec section 7): rate limit -> exponential backoff, 5 attempts;
@@ -46,32 +46,34 @@ class EmbeddingProvider(ABC):
 
 
 class OpenAIProvider(EmbeddingProvider):
-    def __init__(self) -> None:
-        # Deferred import so the package is optional until we actually use it.
+    """OpenAI or Azure OpenAI embeddings (EMBEDDING_PROVIDER=openai|azure)."""
+
+    def __init__(self, azure: bool = False) -> None:
         import openai
 
         cfg = get_settings()
-        self.model = cfg.embedding_model
         self.dim = cfg.embedding_dim
-        # text-embedding-3-* accept a `dimensions` param; ada-002 does not.
-        self._send_dimensions = self.model.startswith("text-embedding-3")
-
-        # If Azure OpenAI settings are present, configure the client for Azure.
-        # We set the global openai config (api_type/api_base/api_key/api_version)
-        # and create a per-call AsyncOpenAI client. This is the most-compatible
-        # approach with a range of openai-python versions.
-        if cfg.azure_openai_api_base and cfg.azure_openai_api_key:
-            openai.api_type = "azure"
-            openai.api_base = cfg.azure_openai_api_base.rstrip("/")
-            openai.api_key = cfg.azure_openai_api_key
-            if cfg.azure_openai_api_version:
-                openai.api_version = cfg.azure_openai_api_version
-            # client instance; we still pass max_retries=0 so our wrapper controls retries
-            self._client = openai.AsyncOpenAI(max_retries=0, timeout=60.0)
+        if azure:
+            if not cfg.azure_configured:
+                raise EmbeddingConfigError(
+                    "EMBEDDING_PROVIDER=azure needs AZURE_OPENAI_API_BASE and AZURE_OPENAI_API_KEY"
+                )
+            # On Azure the "model" is the deployment name.
+            self.model = cfg.azure_openai_embedding_deployment or cfg.embedding_model
+            self._client = openai.AsyncAzureOpenAI(
+                azure_endpoint=cfg.azure_openai_api_base.rstrip("/"),
+                api_key=cfg.azure_openai_api_key,
+                api_version=cfg.azure_openai_api_version,
+                max_retries=0,
+                timeout=60.0,
+            )
         else:
             if not cfg.openai_api_key:
-                raise EmbeddingConfigError("OPENAI_API_KEY is not set")
+                raise EmbeddingConfigError("EMBEDDING_PROVIDER=openai needs OPENAI_API_KEY")
+            self.model = cfg.embedding_model
             self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key, max_retries=0, timeout=60.0)
+        # text-embedding-3-* accept a `dimensions` param; ada-002 does not.
+        self._send_dimensions = "text-embedding-3" in (cfg.embedding_model or self.model)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         import openai
@@ -121,46 +123,42 @@ class OpenAIProvider(EmbeddingProvider):
 
 
 class LocalProvider(EmbeddingProvider):
+    """fastembed (ONNX runtime). Model weights are downloaded once into EMBEDDING_CACHE_DIR."""
+
     def __init__(self) -> None:
         cfg = get_settings()
         self.model = cfg.embedding_model
+        self.dim = cfg.embedding_dim
         if self.model.startswith("text-embedding"):
             raise EmbeddingConfigError(
-                "EMBEDDING_PROVIDER=local needs a sentence-transformers model, e.g. "
+                "EMBEDDING_PROVIDER=local needs a fastembed model, e.g. "
                 "EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 and EMBEDDING_DIM=384"
             )
-        from sentence_transformers import SentenceTransformer  # heavy import, keep lazy
+        try:
+            from fastembed import TextEmbedding  # lazy: loads onnxruntime
 
-        self._st = SentenceTransformer(self.model)
-        self.dim = int(self._st.get_sentence_embedding_dimension())
+            self._model = TextEmbedding(model_name=self.model, cache_dir=cfg.embedding_cache_dir)
+        except Exception as exc:
+            raise EmbeddingConfigError(f"could not load local embedding model {self.model!r}: {exc}") from exc
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        # Encoding is CPU-bound and synchronous: keep it off the event loop.
-        vectors = await asyncio.to_thread(
-            self._st.encode,
-            texts,
-            batch_size=32,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return vectors.tolist()
+
+        def _run() -> list[list[float]]:
+            return [v.tolist() for v in self._model.embed(texts, batch_size=32)]
+
+        # CPU-bound and synchronous: keep it off the event loop.
+        return await asyncio.to_thread(_run)
 
 
 @lru_cache
 def get_embedding_provider() -> EmbeddingProvider:
     cfg = get_settings()
-    # Try to honour the configured provider. If OpenAI (including Azure) fails to
-    # initialize due to misconfiguration, fall back to the local provider as a
-    # safe option (this will download the sentence-transformers model).
     if cfg.embedding_provider == "openai":
-        try:
-            provider: EmbeddingProvider = OpenAIProvider()
-        except EmbeddingConfigError as exc:
-            logger.warning("openai_provider_init_failed", error=str(exc))
-            logger.info("falling_back_to_local_provider")
-            provider = LocalProvider()
+        provider: EmbeddingProvider = OpenAIProvider(azure=False)
+    elif cfg.embedding_provider == "azure":
+        provider = OpenAIProvider(azure=True)
     else:
         provider = LocalProvider()
 

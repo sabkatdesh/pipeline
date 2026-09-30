@@ -5,7 +5,6 @@ Revises: 0002
 Create Date: 2026-09-29
 """
 
-import os
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -16,8 +15,10 @@ down_revision: str | None = "0002"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# Read dimension from env at migration time so it matches the model.
-_EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
+from app.core.config import get_settings  # noqa: E402
+
+# Same source as the ORM model (EMBEDDING_DIM from .env / environment).
+_EMBEDDING_DIM = get_settings().embedding_dim
 
 # IVFFlat lists ≈ sqrt(expected row count).  Sized for ~3 500 rows initially;
 # rebuild the index after a large bulk load with CREATE INDEX CONCURRENTLY.

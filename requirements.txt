@@ -1,4 +1,4 @@
-# Web Framework
+# Web framework
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic==2.10.3
@@ -10,29 +10,20 @@ asyncpg==0.30.0
 alembic==1.14.0
 pgvector==0.3.6
 
-# HTTP Client
+# HTTP / logging
 httpx==0.28.1
-
-# Logging
 structlog==24.4.0
 
-# Embeddings & Vector Search
-openai==1.58.1
-sentence-transformers==3.3.1
-rank-bm25==0.2.2
-
-# RAG Orchestration
-langchain==0.3.13
-langchain-anthropic==0.3.3
-langchain-openai==0.2.14
-langgraph==0.2.60
+# LLM (Anthropic) + embeddings (Azure/OpenAI or local ONNX - no PyTorch)
 anthropic==0.42.0
+langchain-anthropic==0.3.3
+openai==1.58.1
+fastembed==0.4.2
 
-# Concept Graph
+# Retrieval
+rank-bm25==0.2.2
 networkx==3.4.2
-
-# RAG Evaluation
-ragas==0.2.8
+numpy<2
 
 # Testing
 pytest==8.3.4

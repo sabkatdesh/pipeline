@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,28 +18,36 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(20, ge=0, le=100)
 
     # ── Embedding ────────────────────────────────────────────────────────────
-    embedding_provider: str = Field("openai", pattern="^(openai|local)$")
+    # local  = fastembed (ONNX, no API key, 384-dim)  <- default
+    # openai = OpenAI API        azure = Azure OpenAI deployment
+    embedding_provider: str = Field("local", pattern="^(openai|azure|local)$")
+    embedding_model: str = Field("sentence-transformers/all-MiniLM-L6-v2")
+    embedding_dim: int = Field(384, ge=1)
+    embedding_cache_dir: str = Field("data/models")
     openai_api_key: str | None = Field(None)
-    # Azure OpenAI / Foundry (optional). If present, these values will be used
-    # to configure the OpenAI client to talk to an Azure OpenAI endpoint.
+
+    # ── Azure OpenAI (optional: embeddings and/or chat fallback) ─────────────
     azure_openai_api_base: str | None = Field(None)
     azure_openai_api_key: str | None = Field(None)
-    azure_openai_api_version: str | None = Field(None)
-    embedding_model: str = Field("text-embedding-3-small")
-    embedding_dim: int = Field(1536, ge=1)
+    azure_openai_api_version: str = Field("2024-10-21")
+    azure_openai_embedding_deployment: str | None = Field(None)
+    azure_openai_chat_deployment: str | None = Field(None)
 
     # ── LLM ──────────────────────────────────────────────────────────────────
+    # Anthropic is used when ANTHROPIC_API_KEY is set; otherwise Azure chat.
     anthropic_api_key: str | None = Field(None)
     llm_model: str = Field("claude-haiku-4-5-20251001")
     llm_max_tokens: int = Field(1024, ge=1)
 
     # ── RAG ──────────────────────────────────────────────────────────────────
     rag_top_k: int = Field(5, ge=1, le=20)
-    rag_similarity_threshold: float = Field(0.65, ge=0.0, le=1.0)
-    rag_max_retry_iterations: int = Field(3, ge=1)
-    rag_reranker_model: str = Field("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    rag_bm25_index_path: str = Field("/app/data/bm25_index.pkl")
-    rag_graph_path: str = Field("/app/data/concept_graph.pkl")
+    # Cosine-similarity cut-offs (calibrated for MiniLM / text-embedding-3-small).
+    rag_similarity_threshold: float = Field(0.30, ge=0.0, le=1.0)  # below = "no match"
+    rag_medium_threshold: float = Field(0.45, ge=0.0, le=1.0)
+    rag_high_threshold: float = Field(0.60, ge=0.0, le=1.0)
+    rag_max_retry_iterations: int = Field(2, ge=1)
+    rag_bm25_index_path: str = Field("data/bm25_index.pkl")
+    rag_graph_path: str = Field("data/concept_graph.pkl")
 
     # ── Ingestion ────────────────────────────────────────────────────────────
     arxiv_rate_limit_seconds: float = Field(3.5, ge=0.0)
@@ -57,17 +65,9 @@ class Settings(BaseSettings):
     log_level: str = Field("INFO")
     reset_confirmation_token: str = Field("my-secret-reset-token")
 
-    @model_validator(mode="after")
-    def _check_openai_key(self) -> "Settings":
-        # Allow either an OpenAI API key (openai.com) or Azure OpenAI settings
-        # (base + key) when EMBEDDING_PROVIDER=openai.
-        if self.embedding_provider == "openai" and not (
-            self.openai_api_key or (self.azure_openai_api_key and self.azure_openai_api_base)
-        ):
-            raise ValueError(
-                "OPENAI_API_KEY or AZURE_OPENAI_API_KEY (with AZURE_OPENAI_API_BASE) is required when EMBEDDING_PROVIDER=openai"
-            )
-        return self
+    @property
+    def azure_configured(self) -> bool:
+        return bool(self.azure_openai_api_base and self.azure_openai_api_key)
 
     @property
     def arxiv_categories_list(self) -> list[str]:

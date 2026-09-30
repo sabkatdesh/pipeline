@@ -1,4 +1,7 @@
 from collections.abc import AsyncGenerator
+from datetime import datetime
+
+from sqlalchemy import DateTime
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -10,6 +13,9 @@ from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
+
+    # All timestamp columns are TIMESTAMPTZ; without this asyncpg rejects aware datetimes.
+    type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 def _build_engine():

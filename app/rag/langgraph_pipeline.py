@@ -36,6 +36,11 @@ from app.schemas.rag import ConfidenceLevel
 
 logger = get_logger(__name__)
 
+NO_MATCH_ANSWER = (
+    "I couldn't find papers in the ingested arXiv dataset that answer this question, "
+    "so I can't give a grounded answer."
+)
+
 
 class Node:
     """Base node interface. Nodes receive a mutable `state` dict and may
@@ -63,7 +68,7 @@ class RetrieverNode(Node):
         self._retriever = HybridRetriever()
 
     async def run(self, state: Dict[str, Any]) -> None:
-        question = state.get("question", "")
+        question = state.get("search_query") or state.get("question", "")
         variants = state.get("variants", [])
         hyde = state.get("hyde", "")
         t0 = perf_counter()
@@ -194,30 +199,34 @@ class StateGraph:
             confidence = confidence_from_score(best_score)
             state["confidence"] = confidence
 
-            if confidence != ConfidenceLevel.none:
+            if confidence != ConfidenceLevel.none or iterations + 1 >= self._cfg.rag_max_retry_iterations:
                 break
 
             # try rewriting the query via LLM
             try:
-                rewritten = await llm_call(REWRITER_SYSTEM, rewriter_user(state["question"], last_query))
-            except (LLMRateLimitError, LLMUnavailableError):
-                # propagate to API layer to return 429/503 as before
-                raise
+                rewritten = await llm_call(REWRITER_SYSTEM, rewriter_user(state["question"], last_query or state["question"]))
+            except (LLMRateLimitError, LLMUnavailableError) as exc:
+                # The rewrite is best-effort; generation surfaces real LLM outages as 429/503.
+                logger.warning("query_rewrite_skipped", error=str(exc))
+                break
             rewritten = (rewritten or "").strip()
-            if not rewritten or rewritten == state["question"]:
+            if not rewritten or rewritten == (state.get("search_query") or state["question"]):
                 break
 
-            last_query = state["question"]
-            state["question"] = rewritten
+            last_query = state.get("search_query") or state["question"]
+            state["search_query"] = rewritten
             iterations += 1
 
         state["iterations"] = iterations + 1
 
-        # If no docs were found at all, return the empty-signal similar to previous impl.
-        docs = state.get("docs", []) or []
+        # Keep only papers that are actually similar to the question. If nothing
+        # clears the threshold, answer honestly without calling the LLM.
+        threshold = self._cfg.rag_similarity_threshold
+        docs = [d for d in (state.get("docs", []) or []) if d.similarity_score >= threshold]
+        state["docs"] = docs
         if not docs:
             return {
-                "answer": "",
+                "answer": NO_MATCH_ANSWER,
                 "docs": [],
                 "confidence": ConfidenceLevel.none,
                 "iterations": state.get("iterations", 0),

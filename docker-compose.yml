@@ -1,7 +1,4 @@
-version: "3.9"
-
 services:
-
   db:
     image: pgvector/pgvector:pg16
     environment:
@@ -19,20 +16,22 @@ services:
       - "5432:5432"
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     depends_on:
       db:
         condition: service_healthy
     env_file: .env
+    environment:
+      # Inside compose the DB host is "db"; keep the password in sync with the db service.
+      DATABASE_URL: postgresql+asyncpg://pipeline:${DB_PASSWORD:-password}@db:5432/pipeline
+      RAG_BM25_INDEX_PATH: /app/data/bm25_index.pkl
+      RAG_GRAPH_PATH: /app/data/concept_graph.pkl
+      EMBEDDING_CACHE_DIR: /app/data/models
     ports:
       - "8000:8000"
     volumes:
-      # Persist BM25 index and concept graph between container restarts.
       - appdata:/app/data
-    command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
+    restart: unless-stopped
 
 volumes:
   pgdata:

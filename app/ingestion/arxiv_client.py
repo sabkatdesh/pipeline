@@ -33,7 +33,11 @@ class ArxivClient:
         self._last_request_time: float = 0.0
 
     async def __aenter__(self) -> "ArxivClient":
-        self._http = httpx.AsyncClient(timeout=30.0)
+        self._http = httpx.AsyncClient(
+            timeout=30.0,
+            headers={"User-Agent": "arxiv-rag-pipeline/1.0 (take-home assessment; httpx)"},
+            follow_redirects=True,
+        )
         return self
 
     async def __aexit__(self, *_) -> None:
@@ -62,9 +66,10 @@ class ArxivClient:
             max_results = self._cfg.arxiv_batch_size
 
         params = {
+            # httpx percent-encodes the spaces; do not pre-encode with "+".
             "search_query": (
-                f"cat:{category}"
-                f"+AND+submittedDate:[{_compact(date_from)}+TO+{_compact(date_to)}]"
+                f"cat:{category} AND "
+                f"submittedDate:[{_compact(date_from)}0000 TO {_compact(date_to)}2359]"
             ),
             "start": start,
             "max_results": max_results,
@@ -81,6 +86,9 @@ class ArxivClient:
 
                 if response.status_code in _RETRYABLE_STATUSES:
                     wait = _backoff(attempt, self._cfg.arxiv_rate_limit_seconds)
+                    retry_after = response.headers.get("retry-after", "")
+                    if retry_after.isdigit():
+                        wait = max(wait, min(float(retry_after), 120.0))
                     logger.warning(
                         "arxiv_throttled",
                         status=response.status_code,
@@ -100,15 +108,15 @@ class ArxivClient:
                 )
                 return response.content
 
-            except httpx.TimeoutException:
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == _MAX_RETRIES:
-                    raise
+                    raise RuntimeError(f"arXiv request failed: {exc!r}") from exc
                 wait = _backoff(attempt, self._cfg.arxiv_rate_limit_seconds)
                 logger.warning("arxiv_timeout", attempt=attempt, retry_in=wait)
                 await asyncio.sleep(wait)
 
         raise RuntimeError(
-            f"arXiv API unreachable after {_MAX_RETRIES} attempts "
+            f"arXiv API throttled/unreachable after {_MAX_RETRIES} attempts "
             f"(category={category}, start={start})"
         )
 
@@ -122,7 +130,7 @@ class ArxivClient:
 
 
 def _compact(date_str: str) -> str:
-    """'2026-01-01' → '20260101' (arXiv date query format)."""
+    """'2026-01-01' -> '20260101' (date part of arXiv's YYYYMMDDHHMM format)."""
     return date_str.replace("-", "")
 
 

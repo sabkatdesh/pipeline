@@ -56,22 +56,66 @@ def elapsed_ms(t0: float) -> int:
     return int((time.perf_counter() - t0) * 1000)
 
 
+class _AzureChat:
+    """Minimal chat adapter over Azure OpenAI (fallback when no ANTHROPIC_API_KEY).
+
+    Exposes the same `ainvoke` / `with_structured_output` surface as ChatAnthropic
+    for the subset the app uses.
+    """
+
+    def __init__(self, max_tokens: int | None) -> None:
+        import openai
+
+        cfg = get_settings()
+        self._cfg = cfg
+        self._client = openai.AsyncAzureOpenAI(
+            azure_endpoint=cfg.azure_openai_api_base.rstrip("/"),
+            api_key=cfg.azure_openai_api_key,
+            api_version=cfg.azure_openai_api_version,
+            max_retries=1,
+            timeout=60.0,
+        )
+        self._deployment = cfg.azure_openai_chat_deployment or cfg.llm_model
+        self._max_tokens = max_tokens or cfg.llm_max_tokens
+
+    async def ainvoke(self, messages: list[tuple[str, str]]):
+        import openai
+
+        payload = [
+            {"role": "system" if role == "system" else "user", "content": text}
+            for role, text in messages
+        ]
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self._deployment, messages=payload, max_completion_tokens=self._max_tokens
+            )
+        except openai.RateLimitError as exc:
+            raise LLMRateLimitError("LLM rate limit reached") from exc
+        except openai.OpenAIError as exc:
+            logger.error("azure_chat_error", error=str(exc))
+            raise LLMUnavailableError("LLM service temporarily unavailable") from exc
+
+        class _Resp:
+            content = resp.choices[0].message.content or ""
+
+        return _Resp()
+
+    def with_structured_output(self, schema):
+        parent = self
+
+        class _Structured:
+            async def ainvoke(self, messages):
+                resp = await parent.ainvoke(messages)
+                data = parse_json(resp.content)
+                return data if data is not None else resp.content
+
+        return _Structured()
+
+
 @lru_cache(maxsize=8)
 def get_llm(max_tokens: int | None = None):
-    """Return a langchain-compatible chat model.
-
-    Priority:
-      1. Anthropic (if ANTHROPIC_API_KEY is set)
-      2. Azure/OpenAI (if AZURE_OPENAI_API_BASE + key OR OPENAI_API_KEY is set)
-
-    The returned object implements an async `ainvoke(messages)` method where
-    `messages` is a list of `(role, text)` tuples where `role` is 'system' or
-    'human'. It also supports `with_structured_output(schema)` returning an
-    object whose `ainvoke` returns parsed JSON / dict when possible.
-    """
+    """Chat model: Anthropic when ANTHROPIC_API_KEY is set, else Azure OpenAI."""
     cfg = get_settings()
-
-    # 1) Anthropic (preferred if configured)
     if cfg.anthropic_api_key:
         return ChatAnthropic(
             model=cfg.llm_model,
@@ -81,109 +125,11 @@ def get_llm(max_tokens: int | None = None):
             timeout=60,
             max_retries=1,
         )
-
-    # 2) Azure/OpenAI (use openai.AsyncOpenAI under the hood)
-    # We implement a small adapter that provides the `ainvoke` and
-    # `with_structured_output` methods the rest of the app expects.
-    openai_cfg_present = bool(cfg.azure_openai_api_base and cfg.azure_openai_api_key) or bool(
-        getattr(cfg, "openai_api_key", None)
+    if cfg.azure_configured:
+        return _AzureChat(max_tokens)
+    raise LLMUnavailableError(
+        "No LLM configured: set ANTHROPIC_API_KEY (or AZURE_OPENAI_API_BASE + AZURE_OPENAI_API_KEY)"
     )
-    if not openai_cfg_present:
-        raise LLMUnavailableError("No LLM provider configured: set ANTHROPIC_API_KEY or AZURE_OPENAI_API_BASE+AZURE_OPENAI_API_KEY")
-
-    try:
-        import openai
-    except Exception as exc:
-        raise LLMUnavailableError(f"OpenAI python package not available: {exc}") from exc
-
-    # Configure global openai client for Azure if requested. The AsyncOpenAI
-    # client will pick these up when making requests.
-    if cfg.azure_openai_api_base and cfg.azure_openai_api_key:
-        openai.api_type = "azure"
-        openai.api_base = cfg.azure_openai_api_base.rstrip("/")
-        openai.api_key = cfg.azure_openai_api_key
-        if cfg.azure_openai_api_version:
-            openai.api_version = cfg.azure_openai_api_version
-        client = openai.AsyncOpenAI(max_retries=0, timeout=60.0)
-    else:
-        # standard openai.com
-        client = openai.AsyncOpenAI(api_key=cfg.openai_api_key, max_retries=0, timeout=60.0)
-
-    class _OpenAIAdapter:
-        def __init__(self, client, model, max_tokens):
-            self._client = client
-            self.model = model
-            self.max_tokens = max_tokens or cfg.llm_max_tokens
-
-        async def ainvoke(self, messages: list[tuple[str, str]]):
-            # Convert tuples to chat messages for the OpenAI chat completion API
-            msg_list = []
-            for role, text in messages:
-                role_name = "system" if role == "system" else "user"
-                msg_list.append({"role": role_name, "content": text})
-
-            # Call the chat completion endpoint
-            try:
-                resp = await self._client.chat.completions.create(
-                    model=self.model, messages=msg_list, max_tokens=self.max_tokens
-                )
-            except Exception as exc:
-                # Normalize errors to match Anthropic mapping in _translate_errors
-                # We raise a generic LLMUnavailableError so the API layer returns 503.
-                logger.error("openai_chat_error", error=str(exc))
-                raise LLMUnavailableError("LLM service temporarily unavailable") from exc
-
-            # Extract text from the SDK response. Different client shapes exist
-            # between OpenAI releases and Azure, so be permissive.
-            content = ""
-            try:
-                choice = None
-                if hasattr(resp, "choices") and resp.choices:
-                    choice = resp.choices[0]
-                elif isinstance(resp, dict) and resp.get("choices"):
-                    choice = resp["choices"][0]
-
-                if choice is not None:
-                    # Try common locations
-                    if hasattr(choice, "message"):
-                        msg = choice.message
-                        if isinstance(msg, dict):
-                            content = msg.get("content", "")
-                        else:
-                            content = getattr(msg, "content", "")
-                    elif isinstance(choice, dict):
-                        content = choice.get("message", {}).get("content", "") or choice.get("text", "")
-                else:
-                    # Fallback: try top-level text
-                    content = getattr(resp, "text", "") or resp.get("text", "") if isinstance(resp, dict) else str(resp)
-            except Exception:
-                content = str(resp)
-
-            class _Resp:
-                def __init__(self, content):
-                    self.content = content
-
-            return _Resp(content)
-
-        def with_structured_output(self, schema):
-            parent = self
-
-            class _Structured:
-                async def ainvoke(self, messages: list[tuple[str, str]]):
-                    resp = await parent.ainvoke(messages)
-                    text = resp.content
-                    start, end = text.find("{"), text.rfind("}")
-                    if start == -1 or end <= start:
-                        return text
-                    try:
-                        data = json.loads(text[start : end + 1])
-                        return data
-                    except Exception:
-                        return text
-
-            return _Structured()
-
-    return _OpenAIAdapter(client, cfg.llm_model, max_tokens)
 
 
 @contextmanager
@@ -246,6 +192,12 @@ async def generate_answer(system: str, user: str) -> GeneratedAnswer:
 
     text = await llm_call(system, user)
     return GeneratedAnswer(answer=text, cited_arxiv_ids=_CITE_RE.findall(text))
+
+
+def normalize_arxiv_id(value: str) -> str:
+    """'arXiv:2601.00001v2' / 'https://arxiv.org/abs/2601.00001' -> '2601.00001'."""
+    m = re.search(r"(\d{4}\.\d{4,5})", value or "")
+    return m.group(1) if m else (value or "").strip()
 
 
 def cited_ids_in(text: str) -> list[str]:

@@ -242,6 +242,15 @@ class BM25Index:
         return [(self.arxiv_ids[i], float(scores[i])) for i in top if scores[i] > 0]
 
 
+def build_bm25_index_from_rows(rows: list[tuple[str, str, str]]) -> BM25Index:
+    """Pure function: (arxiv_id, title, abstract) rows -> BM25 index."""
+    return BM25Index(
+        bm25=BM25Okapi([tokenize(f"{title}\n{abstract}") for _, title, abstract in rows]),
+        arxiv_ids=[pid for pid, _, _ in rows],
+        built_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 async def build_bm25_index(path: str | None = None) -> int:
     """Rebuild the index from every paper in the DB. Returns document count."""
     path = path or get_settings().rag_bm25_index_path
@@ -256,15 +265,9 @@ async def build_bm25_index(path: str | None = None) -> int:
         logger.warning("bm25_skipped_no_papers")
         return 0
 
-    def _build() -> BM25Index:
-        corpus = [tokenize(f"{r.title}\n{r.abstract_clean}") for r in rows]
-        return BM25Index(
-            bm25=BM25Okapi(corpus),
-            arxiv_ids=[r.arxiv_id for r in rows],
-            built_at=datetime.now(timezone.utc).isoformat(),
-        )
-
-    index = await asyncio.to_thread(_build)  # CPU-bound
+    index = await asyncio.to_thread(
+        build_bm25_index_from_rows, [(r.arxiv_id, r.title, r.abstract_clean) for r in rows]
+    )  # CPU-bound
     await asyncio.to_thread(_atomic_pickle_dump, index, path)
     logger.info("bm25_built", docs=len(rows), path=path)
     return len(rows)
