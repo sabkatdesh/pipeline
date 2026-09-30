@@ -53,8 +53,11 @@ async def run_ingestion(
 
     cfg = get_settings()
     categories = body.categories or cfg.arxiv_categories_list
-    date_from = date.fromisoformat(body.date_from)
-    date_to = date.fromisoformat(body.date_to)
+    # Resolve optional date fields against environment defaults when omitted.
+    date_from_str = body.date_from or cfg.ingest_date_from
+    date_to_str = body.date_to or cfg.ingest_date_to
+    date_from = date.fromisoformat(date_from_str)
+    date_to = date.fromisoformat(date_to_str)
 
     # Create the audit row before launching the task so callers always get a run_id.
     run = IngestionRun(
@@ -65,6 +68,9 @@ async def run_ingestion(
     )
     db.add(run)
     await db.flush()
+    # Persist the run row before launching the background task so the
+    # pipeline can reliably query/update the ingestion_runs row.
+    await db.commit()
     run_id = run.id
 
     pipeline = IngestionPipeline(run_id=run_id)
@@ -102,6 +108,12 @@ async def get_status(db: AsyncSession = Depends(get_db)) -> IngestStatus:
 
     now = datetime.now(timezone.utc)
     elapsed = (run.completed_at or now) - run.started_at
+    current_week: str | None = None
+    try:
+        if run.last_checkpoint and isinstance(run.last_checkpoint, dict):
+            current_week = run.last_checkpoint.get("current", {}).get("date_window")
+    except Exception:
+        current_week = None
 
     return IngestStatus(
         run_id=run.id,
@@ -114,6 +126,7 @@ async def get_status(db: AsyncSession = Depends(get_db)) -> IngestStatus:
         completed_at=run.completed_at,
         elapsed_seconds=elapsed.total_seconds(),
         error_message=run.error_message,
+        current_week=current_week,
     )
 
 

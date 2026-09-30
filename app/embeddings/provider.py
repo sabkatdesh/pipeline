@@ -47,6 +47,7 @@ class EmbeddingProvider(ABC):
 
 class OpenAIProvider(EmbeddingProvider):
     def __init__(self) -> None:
+        # Deferred import so the package is optional until we actually use it.
         import openai
 
         cfg = get_settings()
@@ -54,10 +55,23 @@ class OpenAIProvider(EmbeddingProvider):
         self.dim = cfg.embedding_dim
         # text-embedding-3-* accept a `dimensions` param; ada-002 does not.
         self._send_dimensions = self.model.startswith("text-embedding-3")
-        # max_retries=0: we own the retry policy so it matches the spec.
-        self._client = openai.AsyncOpenAI(
-            api_key=cfg.openai_api_key, max_retries=0, timeout=60.0
-        )
+
+        # If Azure OpenAI settings are present, configure the client for Azure.
+        # We set the global openai config (api_type/api_base/api_key/api_version)
+        # and create a per-call AsyncOpenAI client. This is the most-compatible
+        # approach with a range of openai-python versions.
+        if cfg.azure_openai_api_base and cfg.azure_openai_api_key:
+            openai.api_type = "azure"
+            openai.api_base = cfg.azure_openai_api_base.rstrip("/")
+            openai.api_key = cfg.azure_openai_api_key
+            if cfg.azure_openai_api_version:
+                openai.api_version = cfg.azure_openai_api_version
+            # client instance; we still pass max_retries=0 so our wrapper controls retries
+            self._client = openai.AsyncOpenAI(max_retries=0, timeout=60.0)
+        else:
+            if not cfg.openai_api_key:
+                raise EmbeddingConfigError("OPENAI_API_KEY is not set")
+            self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key, max_retries=0, timeout=60.0)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         import openai
@@ -137,9 +151,19 @@ class LocalProvider(EmbeddingProvider):
 @lru_cache
 def get_embedding_provider() -> EmbeddingProvider:
     cfg = get_settings()
-    provider: EmbeddingProvider = (
-        OpenAIProvider() if cfg.embedding_provider == "openai" else LocalProvider()
-    )
+    # Try to honour the configured provider. If OpenAI (including Azure) fails to
+    # initialize due to misconfiguration, fall back to the local provider as a
+    # safe option (this will download the sentence-transformers model).
+    if cfg.embedding_provider == "openai":
+        try:
+            provider: EmbeddingProvider = OpenAIProvider()
+        except EmbeddingConfigError as exc:
+            logger.warning("openai_provider_init_failed", error=str(exc))
+            logger.info("falling_back_to_local_provider")
+            provider = LocalProvider()
+    else:
+        provider = LocalProvider()
+
     if provider.dim != cfg.embedding_dim:
         raise EmbeddingConfigError(
             f"Provider produces {provider.dim}-dim vectors but EMBEDDING_DIM={cfg.embedding_dim}"

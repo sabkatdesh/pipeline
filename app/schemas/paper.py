@@ -4,8 +4,10 @@ from pydantic import BaseModel, Field
 
 
 class IngestRequest(BaseModel):
-    date_from: str = Field("2026-01-01", description="Start date (YYYY-MM-DD)")
-    date_to: str = Field("2026-09-29", description="End date (YYYY-MM-DD)")
+    # If omitted, the handler will fall back to the ingest_date_from / ingest_date_to
+    # environment-configured defaults in `app/core/config.py`.
+    date_from: str | None = Field(None, description="Start date (YYYY-MM-DD)")
+    date_to: str | None = Field(None, description="End date (YYYY-MM-DD)")
     categories: list[str] | None = Field(
         None,
         description="arXiv category codes; defaults to ARXIV_CATEGORIES env var",
@@ -29,6 +31,9 @@ class IngestStatus(BaseModel):
     completed_at: datetime | None
     elapsed_seconds: float | None
     error_message: str | None
+    # Date-window currently being processed (ISO date string, e.g. "2026-03-09").
+    # This mirrors the checkpoint format stored in IngestionRun.last_checkpoint["current"]["date_window"].
+    current_week: str | None = None
 
 
 class ResetRequest(BaseModel):

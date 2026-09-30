@@ -165,13 +165,23 @@ class IngestionPipeline:
 
             batch_size = min(self._cfg.arxiv_batch_size, remaining)
 
-            xml_bytes = await client.fetch(
-                category=category,
-                date_from=str(win_start),
-                date_to=str(win_end),
-                start=offset,
-                max_results=batch_size,
-            )
+            try:
+                xml_bytes = await client.fetch(
+                    category=category,
+                    date_from=str(win_start),
+                    date_to=str(win_end),
+                    start=offset,
+                    max_results=batch_size,
+                )
+            except Exception as exc:
+                # On an unrecoverable fetch failure, persist our current
+                # checkpoint (so we can resume at the current offset) then
+                # re-raise the exception to let the outer run() handler mark
+                # the ingestion as failed.
+                logger.exception("arxiv_fetch_failed_saving_checkpoint", category=category, window=window_key, offset=offset, error=str(exc))
+                async with AsyncSessionLocal() as session:
+                    await chk.save_progress(session, self._run_id, category, window_key, offset)
+                raise
 
             try:
                 feed = parse_feed(xml_bytes)

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import ingestion, stats
+from app.api.v1 import ingestion, stats, rag
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 
@@ -32,6 +32,8 @@ def create_app() -> FastAPI:
 
     app.include_router(ingestion.router, prefix="/api/v1")
     app.include_router(stats.router, prefix="/api/v1")
+
+    app.include_router(rag.router, prefix="/api/v1")
 
     @app.get("/health", tags=["health"])
     async def health():

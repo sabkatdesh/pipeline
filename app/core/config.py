@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # ── Embedding ────────────────────────────────────────────────────────────
     embedding_provider: str = Field("openai", pattern="^(openai|local)$")
     openai_api_key: str | None = Field(None)
+    # Azure OpenAI / Foundry (optional). If present, these values will be used
+    # to configure the OpenAI client to talk to an Azure OpenAI endpoint.
+    azure_openai_api_base: str | None = Field(None)
+    azure_openai_api_key: str | None = Field(None)
+    azure_openai_api_version: str | None = Field(None)
     embedding_model: str = Field("text-embedding-3-small")
     embedding_dim: int = Field(1536, ge=1)
 
@@ -54,8 +59,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_openai_key(self) -> "Settings":
-        if self.embedding_provider == "openai" and not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai")
+        # Allow either an OpenAI API key (openai.com) or Azure OpenAI settings
+        # (base + key) when EMBEDDING_PROVIDER=openai.
+        if self.embedding_provider == "openai" and not (
+            self.openai_api_key or (self.azure_openai_api_key and self.azure_openai_api_base)
+        ):
+            raise ValueError(
+                "OPENAI_API_KEY or AZURE_OPENAI_API_KEY (with AZURE_OPENAI_API_BASE) is required when EMBEDDING_PROVIDER=openai"
+            )
         return self
 
     @property
